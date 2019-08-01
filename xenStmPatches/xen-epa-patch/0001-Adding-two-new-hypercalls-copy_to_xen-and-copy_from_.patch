@@ -1,0 +1,128 @@
+From b57f46ec3ccd6da62dbf1d027854478750e63e52 Mon Sep 17 00:00:00 2001
+Message-Id: <b57f46ec3ccd6da62dbf1d027854478750e63e52.1564569448.git.tejaswiniav@gmail.com>
+From: Tejaswini Vibhute <tejaswiniav@gmail.com>
+Date: Tue, 30 Jul 2019 02:52:10 -0700
+Subject: [PATCH 1/2] Adding two new hypercalls copy_to_xen and copy_from_xen
+ to support EPA-RIMM-Xen
+
+---
+ xen/arch/x86/hypercall.c    |  2 ++
+ xen/arch/x86/mm.c           | 37 +++++++++++++++++++++++++++++++++++++
+ xen/arch/x86/pv/hypercall.c |  2 ++
+ xen/include/public/xen.h    |  3 +++
+ xen/include/xen/hypercall.h | 11 +++++++++++
+ 5 files changed, 55 insertions(+)
+
+diff --git a/xen/arch/x86/hypercall.c b/xen/arch/x86/hypercall.c
+index 90e88c1d2c..6283a6a832 100644
+--- a/xen/arch/x86/hypercall.c
++++ b/xen/arch/x86/hypercall.c
+@@ -69,6 +69,8 @@ const hypercall_args_t hypercall_args_table[NR_hypercalls] =
+     ARGS(dm_op, 3),
+     ARGS(mca, 1),
+     ARGS(arch_1, 1),
++    ARGS(copy_to_xen, 2),
++    ARGS(copy_from_xen, 3),
+ };
+ 
+ #undef COMP
+diff --git a/xen/arch/x86/mm.c b/xen/arch/x86/mm.c
+index 608ff2495f..2be5d73ea4 100644
+--- a/xen/arch/x86/mm.c
++++ b/xen/arch/x86/mm.c
+@@ -5840,6 +5840,43 @@ unsigned long get_upper_mfn_bound(void)
+     return min(max_mfn, 1UL << (paddr_bits - PAGE_SHIFT)) - 1;
+ }
+ 
++/*
++ * Copy the contents of arg onto a xen page
++ */
++unsigned long do_copy_to_xen(int len, XEN_GUEST_HANDLE_PARAM(void) arg)
++{
++    void *resource;
++    if ( (resource = alloc_xenheap_pages(0, 0)) == NULL )
++    {
++        printk(XENLOG_G_DEBUG "Failed to allocate resource page with error: \
++                %lx. \n", (unsigned long)-EFAULT);
++        return -EFAULT;
++    }
++
++    if ( copy_from_guest(resource, arg, len) )
++    {
++        printk(XENLOG_G_DEBUG "Failed to copy from guest with error : %lx\n", \
++                (unsigned long)-EFAULT);
++        return -EFAULT;
++    }
++    return (unsigned long)resource;
++}
++
++/*
++ * Copy the contents of arg(xen page) onto a destination address
++ */
++unsigned long do_copy_from_xen(int len, XEN_GUEST_HANDLE_PARAM(void) arg, void *src_page)
++{
++    if ( copy_to_guest(arg, src_page, len) )
++    {
++        printk(XENLOG_G_DEBUG "Failed to copy to guest with error : %lx\n", \
++                (unsigned long)-EFAULT);
++        return -EFAULT;
++    }
++    free_xenheap_page(src_page);
++    return 1;
++}
++
+ /*
+  * Local variables:
+  * mode: C
+diff --git a/xen/arch/x86/pv/hypercall.c b/xen/arch/x86/pv/hypercall.c
+index 8c0979e4ee..588f8c4fae 100644
+--- a/xen/arch/x86/pv/hypercall.c
++++ b/xen/arch/x86/pv/hypercall.c
+@@ -82,6 +82,8 @@ const hypercall_table_t pv_hypercall_table[] = {
+     COMPAT_CALL(dm_op),
+     HYPERCALL(mca),
+     HYPERCALL(arch_1),
++    HYPERCALL(copy_to_xen),
++    HYPERCALL(copy_from_xen),
+ };
+ 
+ #undef do_arch_1
+diff --git a/xen/include/public/xen.h b/xen/include/public/xen.h
+index fb1df8f293..9c594caeff 100644
+--- a/xen/include/public/xen.h
++++ b/xen/include/public/xen.h
+@@ -132,6 +132,9 @@ DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
+ #define __HYPERVISOR_arch_6               54
+ #define __HYPERVISOR_arch_7               55
+ 
++#define __HYPERVISOR_copy_to_xen          56
++#define __HYPERVISOR_copy_from_xen        57
++
+ /* ` } */
+ 
+ /*
+diff --git a/xen/include/xen/hypercall.h b/xen/include/xen/hypercall.h
+index cc99aea57d..9db6717230 100644
+--- a/xen/include/xen/hypercall.h
++++ b/xen/include/xen/hypercall.h
+@@ -130,6 +130,17 @@ extern long
+ do_xsm_op(
+     XEN_GUEST_HANDLE_PARAM(xsm_op_t) u_xsm_op);
+ 
++extern unsigned long
++do_copy_to_xen(
++        int len,
++        XEN_GUEST_HANDLE_PARAM(void) arg);
++
++extern unsigned long
++do_copy_from_xen(
++        int len,
++        XEN_GUEST_HANDLE_PARAM(void) arg,
++        void *arc);
++
+ #ifdef CONFIG_TMEM
+ extern long
+ do_tmem_op(
+-- 
+2.17.1
+

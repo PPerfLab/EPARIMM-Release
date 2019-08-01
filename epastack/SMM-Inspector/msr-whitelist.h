@@ -1,0 +1,1 @@
+UINT64 CheckMsrValidSilvermontAtom(UINT64 MsrIndex);

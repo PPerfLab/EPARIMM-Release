@@ -1,0 +1,57 @@
+From ab0faf46c09ae2d26dfe2c5c635cd27ac52f31f4 Mon Sep 17 00:00:00 2001
+Message-Id: <ab0faf46c09ae2d26dfe2c5c635cd27ac52f31f4.1564569522.git.tejaswiniav@gmail.com>
+From: Tejaswini Vibhute <tejaswiniav@gmail.com>
+Date: Tue, 30 Jul 2019 02:51:17 -0700
+Subject: [PATCH 1/2] Adding support for hypecalls copy_to_xen and
+ copy_from_xen for EPA-RIMM-Xen
+
+---
+ arch/x86/include/asm/xen/hypercall.h | 17 +++++++++++++++++
+ include/xen/interface/xen.h          |  3 +++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/arch/x86/include/asm/xen/hypercall.h b/arch/x86/include/asm/xen/hypercall.h
+index f6d20f6cca12..fd858bb01752 100644
+--- a/arch/x86/include/asm/xen/hypercall.h
++++ b/arch/x86/include/asm/xen/hypercall.h
+@@ -283,6 +283,23 @@ HYPERVISOR_callback_op(int cmd, void *arg)
+ 	return _hypercall2(int, callback_op, cmd, arg);
+ }
+ 
++static inline unsigned long long
++HYPERVISOR_copy_to_xen(
++        int len,
++        void *arg)
++{
++    return _hypercall2(unsigned long long, copy_to_xen, len, arg);
++}
++
++static inline unsigned long long
++HYPERVISOR_copy_from_xen(
++        int len,
++        void *arg,
++        void *src)
++{
++    return _hypercall3(unsigned long long, copy_from_xen, len, arg, src);
++}
++
+ static inline int
+ HYPERVISOR_fpu_taskswitch(int set)
+ {
+diff --git a/include/xen/interface/xen.h b/include/xen/interface/xen.h
+index 4f4830ef8f93..890829cdf431 100644
+--- a/include/xen/interface/xen.h
++++ b/include/xen/interface/xen.h
+@@ -93,6 +93,9 @@
+ #define __HYPERVISOR_arch_6               54
+ #define __HYPERVISOR_arch_7               55
+ 
++#define __HYPERVISOR_copy_to_xen          56
++#define __HYPERVISOR_copy_from_xen        57
++
+ /*
+  * VIRTUAL INTERRUPTS
+  *
+-- 
+2.17.1
+

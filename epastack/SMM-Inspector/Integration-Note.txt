@@ -1,0 +1,94 @@
+To integrate EPA-RIMM into the Minnowboard Max firmware source, Add the EPARimm.inf line below.
+
+1. In PlatformPkg.fdf: 
+
+INF RuleOverride = BINARY $(PLATFORM_BINARY_PACKAGE)/$(DXE_ARCHITECTURE)$(TARGET)/$(DXE_ARCHITECTURE)/PnpDxe.inf
+  #
+  # SMM
+  #
+INF MdeModulePkg/Core/PiSmmCore/PiSmmIpl.inf
+INF MdeModulePkg/Core/PiSmmCore/PiSmmCore.inf
+INF UefiCpuPkg/PiSmmCpuDxeSmm/PiSmmCpuDxeSmm.inf
+INF UefiCpuPkg/CpuIo2Smm/CpuIo2Smm.inf
+INF EPARimm/EPARimm.inf			<-- Can add here
+INF MdeModulePkg/Universal/LockBox/SmmLockBox/SmmLockBox.inf
+INF UefiCpuPkg/PiSmmCommunication/PiSmmCommunicationSmm.inf
+================================== 
+2. In PlatformPkgX64.dsc, add the EPARImm.inf line below
+  #
+  # SMM
+  #
+  MdeModulePkg/Core/PiSmmCore/PiSmmIpl.inf
+  MdeModulePkg/Core/PiSmmCore/PiSmmCore.inf
+  UefiCpuPkg/PiSmmCpuDxeSmm/PiSmmCpuDxeSmm.inf
+  UefiCpuPkg/CpuIo2Smm/CpuIo2Smm.inf
+  EPARimm/EPARimm.inf                   <-- Can add here
+  MdeModulePkg/Universal/LockBox/SmmLockBox/SmmLockBox.inf
+  UefiCpuPkg/CpuS3DataDxe/CpuS3DataDxe.inf
+=================================
+3. In edk2\UefiCpuPkg\PiSmmCpuDxeSmm\SmmCpuMemoryManagement.c, need to adjust permissions on host memory for SMM
+
+ MemoryMapEntryCount = mUefiMemoryMapSize/mUefiDescriptorSize;
+  MemoryMap = mUefiMemoryMap;
+  for (Index = 0; Index < MemoryMapEntryCount; Index++) {
+    if (IsUefiPageNotPresent(MemoryMap)) {
+      // EPA-RIMM
+      /*   <-- Here!
+         DEBUG ((DEBUG_INFO, "UefiMemory protection: 0x%lx - 0x%lx\n", MemoryMap->PhysicalStart, MemoryMap->PhysicalStart + (UINT64)EFI_PAGES_TO_SIZE((UINTN)MemoryMap->NumberOfPages)));
+            SmmSetMemoryAttributes (
+            MemoryMap->PhysicalStart,
+            EFI_PAGES_TO_SIZE((UINTN)MemoryMap->NumberOfPages),
+            EFI_MEMORY_RO // EPA-RIMM
+          );
+      */   <-- End!
+    }
+    MemoryMap = NEXT_MEMORY_DESCRIPTOR(MemoryMap, mUefiDescriptorSize);
+  }
+
+4. In MdePkg/Library/SmmMemLib/SmmMemLib.c, need to work around CommBuffer check. Note: When EPA-RIMM switches to using CommBuffer to receive Ring0Manager bins, we don't need to do this.
+
+     DEBUG ((
+        EFI_D_ERROR,
+        "CpuStart (0x%lx) - PhysicalSize (0x%lx)\n",
+        mSmmMemLibInternalSmramRanges[Index].CpuStart,
+        mSmmMemLibInternalSmramRanges[Index].PhysicalSize
+        ));
+      return FALSE;
+    }
+  }
+
+  
+  // Temporary workaround for EPA-RIMM
+
+  /* <-- Here!
+  //
+  // Check override for Valid Communication Region
+  //
+  if (mSmmReadyToLock) {
+    EFI_MEMORY_DESCRIPTOR          *MemoryMap;
+    BOOLEAN                        InValidCommunicationRegion;
+    
+    InValidCommunicationRegion = FALSE;
+    MemoryMap = mMemoryMap;
+    for (Index = 0; Index < mMemoryMapEntryCount; Index++) {
+      if ((Buffer >= MemoryMap->PhysicalStart) &&
+          (Buffer + Length <= MemoryMap->PhysicalStart + LShiftU64 (MemoryMap->NumberOfPages, EFI_PAGE_SHIFT))) {
+        InValidCommunicationRegion = TRUE;
+      }
+      MemoryMap = NEXT_MEMORY_DESCRIPTOR(MemoryMap, mDescriptorSize);
+    }
+
+    if (!InValidCommunicationRegion) {
+      DEBUG ((
+        EFI_D_ERROR,
+        "SmmIsBufferOutsideSmmValid: Not in ValidCommunicationRegion: Buffer (0x%lx) - Length (0x%lx), ",
+        Buffer,
+        Length
+        ));
+      //ASSERT (FALSE); // EPA-RIMM
+      return FALSE;
+    }
+  }
+  */ <-- End!
+  return TRUE;
+}

@@ -1,0 +1,6 @@
+STM Patches for EPA-RIMM-Xen
+
+Patch1: This patch enables the support for getting the necessary hypervisor context for EPA-RIMM-Xen's Inspector. This patch is necessary for EPA-RIMM-Xen to function appropriately.
+
+Patch2: This patch adds in support to collect and report out STM performance when an EPA-RIMM measurement is specified. This patch can be skipped if you would like to just gather measurements with EPA-RIMM-Xen. 
+

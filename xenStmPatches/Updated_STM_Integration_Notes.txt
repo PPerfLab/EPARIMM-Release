@@ -1,0 +1,105 @@
+Update from the https://github.com/jyao1/STM to run on minnowmax-97, 98, and 100 binaries.
+
+A) How to Build STM
+ The final directory layout is like below:
+        c:\EDKII\StmCpuPkg
+        c:\EDKII\StmPlatformSamplePkg
+   2) Copy Override\Vlv2BinaryPkg to Vlv2BinaryPkg.
+        This MUST be done because default Vlv2BinaryPkg has limitation to block STM running.
+   3) Update edk2-platforms/Vlv2TbltDevicePkg/PlatformPkgX64.dsc:
+        Replace "SmmCpuFeaturesLib|UefiCpuPkg/Library/SmmCpuFeaturesLib/SmmCpuFeaturesLib.inf" with 
+		"SmmCpuFeaturesLib|UefiCpuPkg/Library/SmmCpuFeaturesLib/SmmCpuFeaturesLibStm.inf"
+        in section [LibraryClasses.common]
+        Add "StmPlatformSamplePkg/MsegSmramPei/MsegSmramPei.inf" to "[Components.IA32]" section.
+        Add "StmCpuPkg/PiSmmCpuDxeSmm/PiSmmCpuDxeSmm.inf {
+              <LibraryClasses>
+                SmmCpuPlatformHookLib|StmCpuPkg/Library/SmmCpuPlatformHookLibNull/SmmCpuPlatformHookLibNull.inf
+                SmmCpuFeaturesLib|StmCpuPkg/Library/SmmCpuFeaturesLib/SmmCpuFeaturesLib.inf
+            }" to "[Components.X64]" section.
+        Add "StmPlatformSamplePkg/StmPlatformSmm/StmPlatformSmm.inf" to "[Components.X64]" section.
+        Add "StmPlatformSamplePkg/Compatibility/EndOfDxeOnExitPmAuthThunk/EndOfDxeOnExitPmAuthThunk.inf" to "[Components.X64]" section.
+        Add "StmPlatformSamplePkg/Compatibility/SmmCpuSaveStateProtocolOnSmst2/SmmCpuSaveStateProtocolOnSmst2.inf" to "[Components.X64]" section.
+   4) Update edk2-platforms/Vlv2TbltDevicePkg/PlatformPkg.fdf:
+        Add "INF StmPlatformSamplePkg/MsegSmramPei/MsegSmramPei.inf" to "[FV.FVRECOVERY]" section.
+        Replace "INF UefiCpuPkg/PiSmmCpuDxeSmm/PiSmmCpuDxeSmm.inf"
+          by "INF StmCpuPkg/PiSmmCpuDxeSmm/PiSmmCpuDxeSmm.inf" in "[FV.FVMAIN]" section.
+        Add "INF StmPlatformSamplePkg/StmPlatformSmm/StmPlatformSmm.inf" to "[FV.FVMAIN]" section.
+        Add "INF StmPlatformSamplePkg/Compatibility/EndOfDxeOnExitPmAuthThunk/EndOfDxeOnExitPmAuthThunk.inf" to "[FV.FVMAIN]" section.
+        Add "INF StmPlatformSamplePkg/Compatibility/SmmCpuSaveStateProtocolOnSmst2/SmmCpuSaveStateProtocolOnSmst2.inf" to "[FV.FVMAIN]" section.
+        Add "FILE FREEFORM = PCD(gUefiCpuPkgTokenSpaceGuid.PcdStmBinFile) {
+               SECTION RAW = UefiCpuPkg/StmBin/X64$(TARGET)/Stm.bin
+            }" to "[FV.FVMAIN]" section.
+        // Add the following lines if you want to load FRM, else they can be skipped.
+        Add "INF USE=X64 StmPlatformSamplePkg/TestBin/X64$(TARGET)/Frm.inf" to "[FV.FVMAIN]" section.
+        Add "INF USE=X64 StmPlatformSamplePkg/TestBin/X64$(TARGET)/StmService.inf" to "[FV.FVMAIN]" section.
+        Add "INF USE=X64 StmPlatformSamplePkg/TestBin/X64$(TARGET)/FrmLoader.inf" to "[FV.FVMAIN]" section.
+
+    5) Update edk2/UefiCpuPkg/UefiCpuPkg.dec
+	     Add "gUefiCpuPkgTokenSpaceGuid.PcdStmBinFile|{ 0x06, 0x3E, 0xCA, 0xAC, 0x64, 0x3C, 0x09, 0x45, 0xA6, 0x87, 0xDD, 0xC7, 0x6F, 0x71, 0xB5, 0x61 }|VOID*|0x20000001" 
+	in Section [PcdsFixedAtBuild, PcdsPatchableInModule, PcdsDynamic, PcdsDynamicEx]
+
+	6) Create dirs: 
+		edk2/UefiCpuPkg/StmBin/X64DEBUG
+		edk2/UefiCpuPkg/StmBin/X64RELEASE
+
+	
+	7) Update UefiCpuPkg/Library/SmmCpuFeaturesLib/SmmStm.c
+	Add:
+ "VOID          *StmImageBuffer;
+  UINTN         StmImageSize;
+  
+  //
+  // Extract STM image from FV
+  //
+  StmImageBuffer = NULL;
+  StmImageSize = 0;
+
+  Status = GetSectionFromAnyFv (
+             PcdGetPtr(PcdStmBinFile),
+             EFI_SECTION_RAW,
+             0,
+             &StmImageBuffer,
+             &StmImageSize
+             );
+  ASSERT_EFI_ERROR (Status);
+
+  Status = mSmMonitorInitProtocol.LoadMonitor ((EFI_PHYSICAL_ADDRESS)(UINTN)StmImageBuffer, StmImageSize);
+  DEBUG ((EFI_D_ERROR, "mSmMonitorInitProtocol.LoadMonitor - %r\n", Status));
+  ASSERT_EFI_ERROR (Status);
+
+  gBS->FreePool ((VOID *)((UINTN)StmImageBuffer));
+  // Tejaswini: STM Load addition"
+  
+  in function StmSmmConfigurationTableInit to Load STM Image
+ 
+  Resolve dependencies:
+  Add "DxeServicesLib" in section [LibraryClasses] of file UefiCpuPkg/Library/SmmCpuFeaturesLib/SmmCpuFeaturesLibStm.inf (Refer to the next step)
+  Add "#include <Library/DxeServicesLib.h>" to UefiCpuPkg/Library/SmmCpuFeaturesLib/SmmStm.h 
+
+	8) Update UefiCpuPkg/Library/SmmCpuFeaturesLib/SmmCpuFeaturesLibStm.inf
+		Add "gUefiCpuPkgTokenSpaceGuid.PcdStmBinFile						   ## CONSUMES" to Section [Pcd]
+		Add "DxeServicesLib"  to Section [LibraryClasses]
+
+	9) Build the STM Binary
+	
+	10) Copy Stm.bin built above to UefiCpuPkg/StmBin/X64$(TARGET)
+
+================================================================
+					EPA-RIMM Install Procedure:
+================================================================
+1) Update PlatformPkgX64.dsc
+   Add "EPARimm/EPARimm.inf" in Section [Components.X64]
+2) Update PlatformPkg.fdf
+   Add "INF EPARimm/EPARimm.inf" in Section [FV.FVMAIN]
+
+================================================================
+					Known Issues with EPA-RIMM-Xen
+================================================================
+1. The Debug BIOS builds with STM-enabled can encounter the following error. 
+   However, the Release BIOS images do not have this assert. We are working 
+   on investigating the issue.
+    “OS Indication Variable Value 0 
+    ASSERT_EFI_ERROR (Status = Not Found) 
+  
+    ASSERT [ISPDxe] c:\ minnowboard2closesource\Vlv2DeviceRefCodePkg\ValleyView2Soc\North Cluster\ISPDxe\ISPDxe. C (273):! EFI_ERROR (Status)”
+

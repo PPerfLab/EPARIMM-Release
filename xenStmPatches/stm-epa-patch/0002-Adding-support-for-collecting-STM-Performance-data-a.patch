@@ -1,0 +1,524 @@
+From 0e2a593b14ddd126d750d983c58a7c997cd31d90 Mon Sep 17 00:00:00 2001
+Message-Id: <0e2a593b14ddd126d750d983c58a7c997cd31d90.1564622098.git.tejaswiniav@gmail.com>
+In-Reply-To: <6fb794c987523f045a019644149257471efb9fb0.1564622098.git.tejaswiniav@gmail.com>
+References: <6fb794c987523f045a019644149257471efb9fb0.1564622098.git.tejaswiniav@gmail.com>
+From: Tejaswini Vibhute <tejaswiniav@gmail.com>
+Date: Wed, 31 Jul 2019 17:08:25 -0700
+Subject: [PATCH 2/2] Adding support for collecting STM Performance data and
+ sending it to MLE using a newly defined VMCALL, GET_PERFORMANCE_DATA, upon
+ request.
+
+---
+ Stm/StmPkg/Core/Init/StmInit.c             |  2 +
+ Stm/StmPkg/Core/Runtime/SmiEventHandler.c  | 13 +++-
+ Stm/StmPkg/Core/Runtime/SmiHandler.c       | 30 ++++++++-
+ Stm/StmPkg/Core/Runtime/SmiVmcallHandler.c | 78 ++++++++++++++++++++++
+ Stm/StmPkg/Core/Runtime/SmmHandler.c       | 34 +++++++++-
+ Stm/StmPkg/Core/Runtime/SmmRsmHandler.c    | 15 ++++-
+ Stm/StmPkg/Core/Runtime/SmmSetup.c         |  2 +
+ Stm/StmPkg/Core/Runtime/SmmTearDown.c      |  2 +
+ Stm/StmPkg/Core/Runtime/StmRuntime.h       |  7 ++
+ Stm/StmPkg/Core/Stm.h                      | 29 ++++++++
+ Stm/StmPkg/Core/StmPerformance.c           | 41 ++++++++++++
+ Stm/StmPkg/Include/StmApi.h                |  1 +
+ 12 files changed, 249 insertions(+), 5 deletions(-)
+
+diff --git a/Stm/StmPkg/Core/Init/StmInit.c b/Stm/StmPkg/Core/Init/StmInit.c
+index d5770a0..586a4da 100644
+--- a/Stm/StmPkg/Core/Init/StmInit.c
++++ b/Stm/StmPkg/Core/Init/StmInit.c
+@@ -607,6 +607,7 @@ BspInit (
+   }
+ 
+   InterlockedIncrement (&mHostContextCommon.JoinedCpuNum);
++  InterlockedIncrement (&mHostContextCommon.TotalNumberProcessors);
+ 
+   InitializeSpinLock (&mHostContextCommon.MemoryLock);
+   InitializeSpinLock (&mHostContextCommon.SmiVmcallLock);
+@@ -865,6 +866,7 @@ ApInit (
+   }
+   
+   InterlockedIncrement (&mHostContextCommon.JoinedCpuNum);
++  InterlockedIncrement (&mHostContextCommon.TotalNumberProcessors);
+ 
+   DEBUG ((EFI_D_INFO, "Register(%d) - %08x\n", (UINTN)Index, Register));
+   Reg = &mGuestContextCommonSmi.GuestContextPerCpu[Index].Register;
+diff --git a/Stm/StmPkg/Core/Runtime/SmiEventHandler.c b/Stm/StmPkg/Core/Runtime/SmiEventHandler.c
+index 0e67c25..a5559a1 100644
+--- a/Stm/StmPkg/Core/Runtime/SmiEventHandler.c
++++ b/Stm/StmPkg/Core/Runtime/SmiEventHandler.c
+@@ -51,9 +51,13 @@ SmiEventHandler (
+     return ;
+   }
+ 
++#ifndef EPA_PERF
+   STM_PERF_START (Index, 0, "WriteSyncSmmStateSaveArea", "SmiEventHandler");
++#endif
+   WriteSyncSmmStateSaveArea (Index);
++#ifndef EPA_PERF
+   STM_PERF_END (Index, "WriteSyncSmmStateSaveArea", "SmiEventHandler");
++#endif
+ 
+   AsmVmPtrStore (&mGuestContextCommonSmi.GuestContextPerCpu[Index].Vmcs);
+   Rflags = AsmVmPtrLoad (&mGuestContextCommonSmm.GuestContextPerCpu[Index].Vmcs);
+@@ -69,8 +73,15 @@ SmiEventHandler (
+   DEBUG ((EFI_D_INFO, "!!!Enter SmmHandler - %d\n", (UINTN)Index));
+ #endif
+ 
++#ifdef EPA_PERF
++  if (mGuestContextCommonSmi.GuestContextPerCpu[Index].Register.Rax == MANAGER_COMMAND)
++  {
++    DEBUG ((EFI_D_INFO, "STM Enter (%d) -> VmResume\n", (UINTN)Index));
++    STM_PERF_END (Index, "StmEnter", "VmResume");
++  }
++#else
+   STM_PERF_START (Index, 0, "BiosSmmHandler", "SmiEventHandler");
+-
++#endif
+   //
+   // Launch SMM
+   //
+diff --git a/Stm/StmPkg/Core/Runtime/SmiHandler.c b/Stm/StmPkg/Core/Runtime/SmiHandler.c
+index b20a51f..30b5699 100644
+--- a/Stm/StmPkg/Core/Runtime/SmiHandler.c
++++ b/Stm/StmPkg/Core/Runtime/SmiHandler.c
+@@ -115,9 +115,16 @@ StmHandlerSmi (
+ 
+   Index = ApicToIndex (ReadLocalApicId ());
+   InfoBasic.Uint32 = VmRead32 (VMCS_32_RO_EXIT_REASON_INDEX);
++  mInspectorProcessor = GetEpaIndex();
+ 
++#ifndef EPA_PERF
+   STM_PERF_START (Index, InfoBasic.Bits.Reason, "OsSmiHandler", "StmHandlerSmi");
+-
++#else
++  if (Register->Rax == MANAGER_COMMAND) {
++    DEBUG((EFI_D_INFO, "STM Enter (%d) -> SmmVmExit\n", (UINTN)Index));
++    STM_PERF_START (Index, MANAGER_COMMAND, "StmEnter", "SmmVmExit");
++  }
++ #endif
+   Reg = &mGuestContextCommonSmi.GuestContextPerCpu[Index].Register;
+   Register->Rsp = VmReadN (VMCS_N_GUEST_RSP_INDEX);
+   CopyMem (Reg, Register, sizeof(X86_REGISTER));
+@@ -143,7 +150,15 @@ StmHandlerSmi (
+ 
+   VmWriteN (VMCS_N_GUEST_RSP_INDEX, Reg->Rsp); // sync RSP
+ 
++#ifndef EPA_PERF
+   STM_PERF_END (Index, "OsSmiHandler", "StmHandlerSmi");
++#else
++  if (mGuestContextCommonSmi.GuestContextPerCpu[Index].Register.Rax == MANAGER_COMMAND)
++  {
++    DEBUG((EFI_D_INFO, "STM Enter (%d) -> SmmVmEnter\n", (UINTN)Index));
++    STM_PERF_END (Index, "StmEnter", "SmmVmEnter");
++  }
++#endif
+ 
+   CheckPendingMtf (Index);
+ 
+@@ -171,3 +186,16 @@ StmHandlerSmi (
+ 
+   return ;
+ }
++
++UINTN GetEpaIndex()
++{
++  UINTN Index;
++  for (Index = 0; Index < mHostContextCommon.TotalNumberProcessors; Index++)
++  {
++    if (mGuestContextCommonSmi.GuestContextPerCpu[Index].Register.Rax == MANAGER_COMMAND)
++    {
++      return Index;
++    }
++  }
++  return 0;
++}
+diff --git a/Stm/StmPkg/Core/Runtime/SmiVmcallHandler.c b/Stm/StmPkg/Core/Runtime/SmiVmcallHandler.c
+index 4ae8e9d..62319c9 100644
+--- a/Stm/StmPkg/Core/Runtime/SmiVmcallHandler.c
++++ b/Stm/StmPkg/Core/Runtime/SmiVmcallHandler.c
+@@ -362,6 +362,83 @@ SmiVmcallManageVmcsDatabaseHandler (
+   return Status;
+ }
+ 
++/**
++
++  This function is VMCALL handler for SMI.
++
++  @param Index CPU index
++  @param AddressParameter Addresss parameter
++
++  @return VMCALL Status
++
++**/
++STM_STATUS
++SmiVmallGetPerformanceDataHandler (
++  IN UINT32  Index,
++  IN UINT64  AddressParameter
++  )
++{
++  STM_PERF_DATA         *PerfData;
++  UINTN                 PerfDataSize;
++  UINT32                PageNum;
++  X86_REGISTER          *Reg;
++  STM_PERF_DATA_ENTRY   *DataEntry;
++
++  Reg = &mGuestContextCommonSmi.GuestContextPerCpu[Index].Register;
++
++  // ECX:EBX - STM_PERF_DATA
++  // EDX: PageCount
++  AcquireSpinLock(&mHostContextCommon.SmiVmcallLock);
++  DEBUG((EFI_D_INFO, "STM_API_GET_PERFORMANCE_DATA:\n"));
++
++  DataEntry = (STM_PERF_DATA_ENTRY *)(UINTN)mHostContextCommon.PerfData.Address;
++  if (DataEntry == NULL) {
++    ReleaseSpinLock(&mHostContextCommon.SmiVmcallLock);
++    return ERROR_STM_LOG_NOT_ALLOCATED;
++  }
++
++  AcquireSpinLock(&mHostContextCommon.PerfData.PerfLock);
++
++  PageNum = (UINT32)Reg->Rdx;
++
++  if (!IsGuestAddressValid((UINTN)AddressParameter, STM_PAGES_TO_SIZE(PageNum + 1), TRUE)) {
++    DEBUG((EFI_D_ERROR, "Security Violation!\n"));
++    ReleaseSpinLock(&mHostContextCommon.PerfData.PerfLock);
++    ReleaseSpinLock(&mHostContextCommon.SmiVmcallLock);
++    DEBUG((EFI_D_INFO, "Guest AddressParameter - %016lx\n", (UINTN)AddressParameter));
++    return ERROR_STM_SECURITY_VIOLATION;
++  }
++
++  PerfData = (STM_PERF_DATA *)&mHostContextCommon.PerfData;
++  PerfDataSize = mHostContextCommon.PerfData.EntryCount * sizeof(STM_PERF_DATA_ENTRY);
++
++  ReleaseSpinLock(&mHostContextCommon.PerfData.PerfLock);
++  ReleaseSpinLock(&mHostContextCommon.SmiVmcallLock);
++  STM_PERF_DUMP;
++
++  if (PageNum >= STM_SIZE_TO_PAGES(PerfDataSize)) {
++    WriteUnaligned32((UINT32 *)&Reg->Rdx, 0);
++    return ERROR_STM_PAGE_NOT_FOUND;
++  }
++
++  // Write data
++  CopyMem(
++      (VOID *)(UINTN)AddressParameter,
++      (VOID *)((UINTN)DataEntry + SIZE_4KB * PageNum),
++      SIZE_4KB);
++  PageNum++;
++  if (PageNum >= STM_SIZE_TO_PAGES(PerfDataSize)) {
++    WriteUnaligned32((UINT32 *)&Reg->Rdx, 0);
++  }
++  else {
++    WriteUnaligned32((UINT32 *)&Reg->Rdx, PageNum);
++  }
++
++  STM_PERF_CLEAR;
++
++  return STM_SUCCESS;
++}
++
+ /**
+ 
+   This function is VMCALL handler for SMI.
+@@ -696,6 +773,7 @@ STM_VMCALL_HANDLER_STRUCT  mSmiVmcallHandler[] = {
+   {STM_API_MANAGE_VMCS_DATABASE,               SmiVmcallManageVmcsDatabaseHandler},
+   {STM_API_INITIALIZE_PROTECTION,              SmiVmcallInitializeProtectionHandler},
+   {STM_API_MANAGE_EVENT_LOG,                   SmiVmcallManageEventLogHandler},
++  {STM_API_GET_PERFORMANCE_DATA,               SmiVmallGetPerformanceDataHandler},
+ };
+ 
+ /**
+diff --git a/Stm/StmPkg/Core/Runtime/SmmHandler.c b/Stm/StmPkg/Core/Runtime/SmmHandler.c
+index cacefdd..d5dae27 100644
+--- a/Stm/StmPkg/Core/Runtime/SmmHandler.c
++++ b/Stm/StmPkg/Core/Runtime/SmmHandler.c
+@@ -16,6 +16,9 @@
+ 
+ STM_HANDLER  mStmHandlerSmm[VmExitReasonMax];
+ 
++UINTN                 mInspectorProcessor;
++UINTN                 VmCallNum;
++
+ /**
+ 
+   This function initialize STM handle for SMM.
+@@ -105,8 +108,27 @@ StmHandlerSmm (
+   X86_REGISTER        *Reg;
+ 
+   Index = ApicToIndex (ReadLocalApicId ());
+-  
++  mInspectorProcessor = GetEpaIndex();
++
++#ifndef EPA_PERF
+   STM_PERF_END (Index, "BiosSmmHandler", "StmHandlerSmm");
++#endif
++
++  InfoBasic.Uint32 = VmRead32 (VMCS_32_RO_EXIT_REASON_INDEX);
++  VmCallNum = (UINTN)(Register->Rax);
++
++  if ( ( (mGuestContextCommonSmi.GuestContextPerCpu[mInspectorProcessor].Register.Rax == MANAGER_COMMAND) &&
++          (VmCallNum == STM_API_GET_EXECUTIVE_MONITOR_CONTEXT)
++       ) ||
++       ( (mGuestContextCommonSmi.GuestContextPerCpu[Index].Register.Rax == MANAGER_COMMAND) &&
++        (InfoBasic.Bits.Reason == VmExitReasonRsm)
++       )
++     ) {
++    DEBUG((EFI_D_INFO, "STM Exit (%d) -> RSM\n", (UINTN)Index));
++    #ifdef EPA_PERF
++      STM_PERF_START(Index, MANAGER_COMMAND, "StmExit", "Rsm");
++    #endif
++  }
+ 
+   Reg = &mGuestContextCommonSmm.GuestContextPerCpu[Index].Register;
+   Register->Rsp = VmReadN (VMCS_N_GUEST_RSP_INDEX);
+@@ -117,7 +139,6 @@ StmHandlerSmm (
+   //
+   // Dispatch
+   //
+-  InfoBasic.Uint32 = VmRead32 (VMCS_32_RO_EXIT_REASON_INDEX);
+   if (InfoBasic.Bits.Reason >= VmExitReasonMax) {
+     DEBUG ((EFI_D_ERROR, "!!!UnknownReason!!!\n"));
+     DumpVmcsAllField ();
+@@ -131,7 +152,16 @@ StmHandlerSmm (
+ 
+   VmWriteN (VMCS_N_GUEST_RSP_INDEX, Reg->Rsp); // sync RSP
+ 
++#ifndef EPA_PERF
+   STM_PERF_START (Index, InfoBasic.Bits.Reason, "BiosSmmHandler", "StmHandlerSmm");
++#else
++  if ( (mGuestContextCommonSmi.GuestContextPerCpu[mInspectorProcessor].Register.Rax == MANAGER_COMMAND) && 
++       (VmCallNum == STM_API_GET_EXECUTIVE_MONITOR_CONTEXT) 
++     ) {
++    DEBUG((EFI_D_INFO, "STM Exit (%d) -> ExecMonVmCall\n", (UINTN)Index));
++    STM_PERF_END (Index, "StmExit", "ExecMonVmCall");
++  }
++#endif
+ 
+   //
+   // Resume
+diff --git a/Stm/StmPkg/Core/Runtime/SmmRsmHandler.c b/Stm/StmPkg/Core/Runtime/SmmRsmHandler.c
+index 5eb60c2..fc99ca9 100644
+--- a/Stm/StmPkg/Core/Runtime/SmmRsmHandler.c
++++ b/Stm/StmPkg/Core/Runtime/SmmRsmHandler.c
+@@ -30,6 +30,7 @@ RsmHandler (
+   UINT64                         ExecutiveVmcsPtr;
+   UINT64                         VmcsLinkPtr;
+   UINT32                         VmcsSize;
++  X86_REGISTER                   *Reg;
+   
+   VmcsSize = GetVmcsSize();
+   ExecutiveVmcsPtr = VmRead64 (VMCS_64_CONTROL_EXECUTIVE_VMCS_PTR_INDEX);
+@@ -56,6 +57,7 @@ RsmHandler (
+     CpuDeadLoop ();
+   }
+ 
++  Reg = &mGuestContextCommonSmi.GuestContextPerCpu[Index].Register;
+   AsmVmPtrStore (&mGuestContextCommonSmm.GuestContextPerCpu[Index].Vmcs);
+   Rflags = AsmVmPtrLoad (&mGuestContextCommonSmi.GuestContextPerCpu[Index].Vmcs);
+   if ((Rflags & (RFLAGS_CF | RFLAGS_ZF)) != 0) {
+@@ -63,21 +65,32 @@ RsmHandler (
+     CpuDeadLoop ();
+   }
+ 
++#ifndef EPA_PERF
+   STM_PERF_START (Index, 0, "ReadSyncSmmStateSaveArea", "RsmHandler");
++#endif
+   ReadSyncSmmStateSaveArea (Index);
++#ifndef EPA_PERF
+   STM_PERF_END (Index, "ReadSyncSmmStateSaveArea", "RsmHandler");
++#endif
+ 
+ #if 0
+   DEBUG ((EFI_D_INFO, "Exit SmmHandler - %d\n", (UINTN)Index));
+ #endif
+ 
+   // We should not WaitAllProcessorRendezVous() because we can not assume SMM will bring all CPU into BIOS SMM handler.
+-//  WaitAllProcessorRendezVous (Index);
++  WaitAllProcessorRendezVous (Index);
+ 
++#ifndef EPA_PERF
+   STM_PERF_END (Index, "OsSmiHandler", "RsmHandler");
++#endif
+ 
+   CheckPendingMtf (Index);
+ 
++  if (mGuestContextCommonSmi.GuestContextPerCpu[Index].Register.Rax == MANAGER_COMMAND) {
++    DEBUG((EFI_D_INFO, "STM Exit (%d) -> SmmVmEnter\n", (UINTN)Index));
++    STM_PERF_END(Index, "StmExit", "SmmVmEnter");
++  }
++
+   //
+   // Launch back
+   //
+diff --git a/Stm/StmPkg/Core/Runtime/SmmSetup.c b/Stm/StmPkg/Core/Runtime/SmmSetup.c
+index ce9ee8f..1d2c9fe 100644
+--- a/Stm/StmPkg/Core/Runtime/SmmSetup.c
++++ b/Stm/StmPkg/Core/Runtime/SmmSetup.c
+@@ -55,7 +55,9 @@ SmmSetup (
+ 
+     WriteSyncSmmStateSaveAreaSse2 (Index, FALSE);
+ 
++    #ifndef EPA_PERF
+     STM_PERF_START (Index, 0, "BiosSmmHandler", "SmmSetup");
++    #endif
+ 
+     DEBUG ((EFI_D_INFO, "SmmStmSetupRip start (%d) ...\n", (UINTN)Index));
+     DEBUG ((EFI_D_INFO, "New HostStack (%d) - %08x\n", (UINTN)Index, VmReadN  (VMCS_N_HOST_RSP_INDEX)));
+diff --git a/Stm/StmPkg/Core/Runtime/SmmTearDown.c b/Stm/StmPkg/Core/Runtime/SmmTearDown.c
+index 21dad78..5698957 100644
+--- a/Stm/StmPkg/Core/Runtime/SmmTearDown.c
++++ b/Stm/StmPkg/Core/Runtime/SmmTearDown.c
+@@ -54,7 +54,9 @@ SmmTeardown (
+ 
+     WriteSyncSmmStateSaveAreaSse2 (Index, FALSE);
+ 
++    #ifndef EPA_PERF
+     STM_PERF_START (Index, 0, "BiosSmmHandler", "SmmTeardown");
++    #endif
+ 
+     DEBUG ((EFI_D_INFO, "SmmStmTeardownRip start (%d) ...\n", (UINTN)Index));
+     mHostContextCommon.HostContextPerCpu[Index].JumpBufferValid = TRUE;
+diff --git a/Stm/StmPkg/Core/Runtime/StmRuntime.h b/Stm/StmPkg/Core/Runtime/StmRuntime.h
+index ca44495..62f1686 100644
+--- a/Stm/StmPkg/Core/Runtime/StmRuntime.h
++++ b/Stm/StmPkg/Core/Runtime/StmRuntime.h
+@@ -17,6 +17,8 @@
+ 
+ #include "Stm.h"
+ 
++#define MANAGER_COMMAND         0x88
++
+ /**
+ 
+   This is STM VmExit handler.
+@@ -789,4 +791,9 @@ StmTxtReset (
+   IN UINT32  ErrorCode
+   );
+ 
++UINTN
++GetEpaIndex (
++  VOID
++);
++
+ #endif
+diff --git a/Stm/StmPkg/Core/Stm.h b/Stm/StmPkg/Core/Stm.h
+index 956a124..ef81d94 100644
+--- a/Stm/StmPkg/Core/Stm.h
++++ b/Stm/StmPkg/Core/Stm.h
+@@ -726,6 +726,31 @@ StmStartPerformanceMeasurement (
+   IN CONST CHAR8                 *Description OPTIONAL
+   );
+ 
++/**
++ Clear STM performance measuremnent log.
++ 
++ @retval RETURN_SUCCESS           Cleared measurement successfully.
++ @retval RETURN_NOT_FOUND         No STM Perf data.
++
++ **/
++RETURN_STATUS
++EFIAPI
++StmClearPerformanceMeasurement (
++  VOID
++  );
++/**
++  Macro that calls StmClearPerformanceMeasurement().
++  If the PERFORMANCE_LIBRARY_PROPERTY_MEASUREMENT_ENABLED bit of PcdPerformanceLibraryPropertyMask is set,
++  then StmClearPerformanceMeasurement() is called.
++
++**/
++#define STM_PERF_CLEAR                                  \
++  do {                                                  \
++    if (StmPerformanceMeasurementEnabled()) {           \
++      StmClearPerformanceMeasurement();                 \
++    }                                                   \
++  } while (FALSE)
++
+ /**
+   Fills in the end time of a performance measurement. 
+   
+@@ -1011,5 +1036,9 @@ extern STM_HOST_CONTEXT_COMMON         mHostContextCommon;
+ extern STM_GUEST_CONTEXT_COMMON        mGuestContextCommonSmi;
+ extern STM_GUEST_CONTEXT_COMMON        mGuestContextCommonSmm;
+ extern UINT64                          *mExecutiveVmcs;
++extern UINTN                           mInspectorProcessor;
++extern UINTN                           VmCallNum;
++
++#define EPA_PERF
+ 
+ #endif
+diff --git a/Stm/StmPkg/Core/StmPerformance.c b/Stm/StmPkg/Core/StmPerformance.c
+index e158683..7448959 100644
+--- a/Stm/StmPkg/Core/StmPerformance.c
++++ b/Stm/StmPkg/Core/StmPerformance.c
+@@ -55,9 +55,11 @@ StmStartPerformanceMeasurement (
+   //
+   // BUGBUG: Just record CPU0 data, filter others - too many data collected :(
+   //
++#ifndef EPA_PERF
+   if (CpuIndex != 0) {
+     return RETURN_SUCCESS;
+   }
++#endif
+ 
+   DataEntry = (STM_PERF_DATA_ENTRY *)(UINTN)mHostContextCommon.PerfData.Address;
+   if (DataEntry == NULL) {
+@@ -274,3 +276,42 @@ StmDumpPerformanceMeasurement (
+     return RETURN_NOT_FOUND;
+   }
+ }
++
++/**
++  Clear STM performance measurement log.
++
++  @retval RETURN_SUCCESS          Cleared measurement successfully.
++  @retval RETURN_NOT_FOUND        No STM PERF data.
++**/
++RETURN_STATUS
++EFIAPI
++StmClearPerformanceMeasurement (
++  VOID
++  )
++{
++  UINT32                Index;
++  STM_PERF_DATA_ENTRY   *DataEntry;
++
++  DataEntry = (STM_PERF_DATA_ENTRY *)(UINTN)mHostContextCommon.PerfData.Address;
++  if (DataEntry == NULL) {
++    return RETURN_NOT_FOUND;
++  }
++
++  AcquireSpinLock(&mHostContextCommon.PerfData.PerfLock);
++  DEBUG((EFI_D_INFO, "StmPerfAddress: %016lx\n", mHostContextCommon.PerfData.Address));
++  DEBUG((EFI_D_INFO, "StmPerfEntryCount: %08x\n", mHostContextCommon.PerfData.EntryCount));
++
++  for (Index = 0; Index < mHostContextCommon.PerfData.EntryCount; Index++) {
++    ZeroMem(&DataEntry[Index], sizeof(STM_PERF_DATA_ENTRY));
++  }
++
++  mHostContextCommon.PerfData.EntryCount = 0;
++
++  ReleaseSpinLock(&mHostContextCommon.PerfData.PerfLock);
++
++  if (mHostContextCommon.PerfData.EntryCount != 0) {
++    return RETURN_SUCCESS;
++  } else {
++    return RETURN_NOT_FOUND;
++  }
++}
+diff --git a/Stm/StmPkg/Include/StmApi.h b/Stm/StmPkg/Include/StmApi.h
+index 8dad9e6..27accd7 100644
+--- a/Stm/StmPkg/Include/StmApi.h
++++ b/Stm/StmPkg/Include/StmApi.h
+@@ -605,6 +605,7 @@ typedef struct {
+ #define STM_API_MANAGE_VMCS_DATABASE               0x00010006
+ #define STM_API_INITIALIZE_PROTECTION              0x00010007
+ #define STM_API_MANAGE_EVENT_LOG                   0x00010008
++#define STM_API_GET_PERFORMANCE_DATA               0x00010009
+ 
+ //
+ // Return codes
+-- 
+2.22.0.windows.1
+

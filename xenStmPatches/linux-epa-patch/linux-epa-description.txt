@@ -1,0 +1,13 @@
+Linux patch description:
+
+A paravirtualized guest linux kernel uses hypercall mechansim to request Xen to perform ring0 operation on its behalf.
+Hence, the hypercall table in Xen and Linux kernel should be in sync.
+
+This patch series was developed for Linux kernel 4.11-rc8 and supports EPA-RIMM-Xen. 
+
+In Patch1: We added support for 2 new hypercalls copy_to_xen and copy_from_xen in xen.
+This patch series reflects the hypercall table updation in Linux kernel. These hypercalls are used by Ring0Manager of EPA-RIMM-Xen to obtain a xen page to store the Bin. 
+While working with EPA-RIMM-Xen, this patch1 is a must, else Ring0Manager will complain during its build. 
+
+In Patch2: We added support for hypercall "get_stm_perf". Using this hypercall Domain0 can request from Xen the STM Performance data that it collected via the Perf collection VMCALL. This patch may be skipped if one is not interested in collecting or looking at perf data. 
+

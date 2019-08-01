@@ -1,0 +1,33 @@
+1. Apply xen Patches as: 
+   a) Checkout stm-optin branch available on https://github.com/PPerfLab/xen.git 
+   b) Once checked out, go to xen sources location on your system
+   c)	git am <EPA-RIMM_source_location>/xenStmPatches/xen-epa-patch/0001*.patch --ignore-whitespace
+
+   This will apply the patch starting with id 0001.
+   This patch series is tested with xen-4.11
+   This patch includes 1) 2 new hypercalls copy_to_xen and copy_from_xen required for EPA-RIMM's ring0manager to copy Dom0 space bin onto a xen space page.
+
+   You may continue to run the command and apply individual patches by changing the patch id in the above command.
+
+   You may also apply all the xen patches in 1 command. To do so, execute the git am command as:
+      git am <EPA-RIMM_source_location>/xenStmPatches/xen-epa-patch/000*.patch --ignore-whitespace
+
+2. Apply Linux Patch as:
+   a) Checkout Linux kernel 4.11-rc8
+   b) Goto linux sources on your system
+   c)	git am <EPA-RIMM_source_location>/xenStmPatches/linux-epa-patch/0001*.patch --ignore-whitespace
+
+   This Linux kernel patch has the support for the new hypercalls. 
+
+   You may continue to run the command and apply individual patches by changing the patch id in the above command.
+
+   You may also apply all the linux patches in 1 command. To do so, execute the git am command as:
+      git am <EPA-RIMM_source_location>/xenStmPatches/linux-epa-patch/000*.patch --ignore-whitespace
+
+3. Apply STM Patch:
+   a) Checkout latest STM code base from its git tree
+   b) Goto STM sources on your system
+   c)  git am <EPA-RIMM_source_location>/xenStmPatches/stm-epa-patch/0001*.patch --ignore-whitespace
+
+   In order to compile and integrate STM with UEFI code base, follow the steps given in "Updated_STM_Integration_Notes.txt" file
+

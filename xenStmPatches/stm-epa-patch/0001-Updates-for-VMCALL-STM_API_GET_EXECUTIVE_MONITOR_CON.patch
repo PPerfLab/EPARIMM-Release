@@ -1,0 +1,375 @@
+From 6fb794c987523f045a019644149257471efb9fb0 Mon Sep 17 00:00:00 2001
+Message-Id: <6fb794c987523f045a019644149257471efb9fb0.1564622098.git.tejaswiniav@gmail.com>
+From: Tejaswini Vibhute <tejaswiniav@gmail.com>
+Date: Mon, 29 Jul 2019 23:00:19 -0700
+Subject: [PATCH 1/2] Updates for VMCALL STM_API_GET_EXECUTIVE_MONITOR_CONTEXT
+
+This is a new VMCALL interface between SMI handler and STM. Using
+this VMCALL SMI handler can request MLE specific context from STM.
+The signature of theis VMCALL is:
+  EAX = STM_API_GET_EXECUTIVE_MONITOR_CONTEXT
+  EBX = low 32 bits of caller allocated 4K aligned dest buffer
+  ECX = high 32 bits of caller allocated 4K aligned dest buffer
+  EDX = 0
+
+On success, EAX will have STM_SUCCESS and context found by the
+VMCALL will be saved in the caller allocated 4K page.
+
+The caller requests for 1 VM at a time.
+---
+ Stm/StmPkg/Core/Init/StmInit.c             |   2 +
+ Stm/StmPkg/Core/Runtime/SmiEventHandler.c  |   1 +
+ Stm/StmPkg/Core/Runtime/SmmStateSync.c     |  12 +-
+ Stm/StmPkg/Core/Runtime/SmmVmcallHandler.c |  56 ++++++++++
+ Stm/StmPkg/Core/Stm.h                      |  17 +++
+ Stm/StmPkg/Core/VmcsRecord.c               | 124 +++++++++++++++++++++
+ Stm/StmPkg/Include/StmApi.h                |  26 +++++
+ 7 files changed, 237 insertions(+), 1 deletion(-)
+
+diff --git a/Stm/StmPkg/Core/Init/StmInit.c b/Stm/StmPkg/Core/Init/StmInit.c
+index 44aa81c..d5770a0 100644
+--- a/Stm/StmPkg/Core/Init/StmInit.c
++++ b/Stm/StmPkg/Core/Init/StmInit.c
+@@ -18,6 +18,7 @@
+ STM_HOST_CONTEXT_COMMON         mHostContextCommon;
+ STM_GUEST_CONTEXT_COMMON        mGuestContextCommonSmi;
+ STM_GUEST_CONTEXT_COMMON        mGuestContextCommonSmm;
++UINT64                          *mExecutiveVmcs;
+ 
+ volatile BOOLEAN                mIsBspInitialized;
+ 
+@@ -964,6 +965,7 @@ VmcsInit (
+ 
+   mGuestContextCommonSmi.GuestContextPerCpu[Index].Vmcs = (UINT64)(VmcsBase + VmcsSize * (Index * 2));
+   mGuestContextCommonSmm.GuestContextPerCpu[Index].Vmcs = (UINT64)(VmcsBase + VmcsSize * (Index * 2 + 1));
++  mExecutiveVmcs[Index] = (UINT64)(VmcsBase + VmcsSize * (Index * 2 + 2));
+ 
+   DEBUG ((EFI_D_INFO, "SmiVmcsPtr(%d) - %016lx\n", (UINTN)Index, mGuestContextCommonSmi.GuestContextPerCpu[Index].Vmcs));
+   DEBUG ((EFI_D_INFO, "SmmVmcsPtr(%d) - %016lx\n", (UINTN)Index, mGuestContextCommonSmm.GuestContextPerCpu[Index].Vmcs));
+diff --git a/Stm/StmPkg/Core/Runtime/SmiEventHandler.c b/Stm/StmPkg/Core/Runtime/SmiEventHandler.c
+index 6bca420..0e67c25 100644
+--- a/Stm/StmPkg/Core/Runtime/SmiEventHandler.c
++++ b/Stm/StmPkg/Core/Runtime/SmiEventHandler.c
+@@ -43,6 +43,7 @@ SmiEventHandler (
+     return ;
+   }
+ 
++  mExecutiveVmcs[Index] = ExecutiveVmcsPtr;
+   VmcsLinkPtr = VmRead64 (VMCS_64_GUEST_VMCS_LINK_PTR_INDEX);
+   if (IsOverlap (VmcsLinkPtr, VmcsSize, mHostContextCommon.TsegBase, mHostContextCommon.TsegLength)) {
+     // Overlap TSEG
+diff --git a/Stm/StmPkg/Core/Runtime/SmmStateSync.c b/Stm/StmPkg/Core/Runtime/SmmStateSync.c
+index e0a633f..cb4a817 100644
+--- a/Stm/StmPkg/Core/Runtime/SmmStateSync.c
++++ b/Stm/StmPkg/Core/Runtime/SmmStateSync.c
+@@ -274,7 +274,17 @@ WriteSyncSmmStateSaveArea (
+     CpuState->Cr4 = (UINT32)VmReadN (VMCS_N_GUEST_CR4_INDEX);
+     CpuState->Cr3 = VmReadN (VMCS_N_GUEST_CR3_INDEX);
+     CpuState->Cr0 = VmReadN (VMCS_N_GUEST_CR0_INDEX);
+-  } else {
++
++    // Record the CpuState in  mGuestContextCommonSmi as well. This information will
++    // be used by ExecutiveMonitorVmcsContext() to get VMX root info.
++    mGuestContextCommonSmi.GuestContextPerCpu[Index].Cr0 = (UINTN)CpuState->Cr0;
++    mGuestContextCommonSmi.GuestContextPerCpu[Index].Cr3 = (UINTN)CpuState->Cr3;
++    mGuestContextCommonSmi.GuestContextPerCpu[Index].Cr4 = CpuState->Cr4;
++    mGuestContextCommonSmi.GuestContextPerCpu[Index].Gdtr.Base = VmReadN(VMCS_N_GUEST_GDTR_BASE_INDEX);
++    mGuestContextCommonSmi.GuestContextPerCpu[Index].Idtr.Base = VmReadN(VMCS_N_GUEST_IDTR_BASE_INDEX);
++  }
++  else
++  {
+     CpuState->GdtBaseHiDword = 0;
+     CpuState->GdtBaseLoDword = 0;
+ //    CpuState->GdtLimit = 0;
+diff --git a/Stm/StmPkg/Core/Runtime/SmmVmcallHandler.c b/Stm/StmPkg/Core/Runtime/SmmVmcallHandler.c
+index 7a50c0f..30f5bc2 100644
+--- a/Stm/StmPkg/Core/Runtime/SmmVmcallHandler.c
++++ b/Stm/StmPkg/Core/Runtime/SmmVmcallHandler.c
+@@ -372,11 +372,67 @@ SmmVmcallReturnFromProtectionExceptionHandler (
+   return STM_SUCCESS;
+ }
+ 
++/**
++
++  This function is VMCALL handler for SMM.
++
++  @param Index             CPU index
++  @param AddressParameter  Addresss parameter
++
++  @return VMCALL status
++
++**/
++STM_STATUS
++SmmVmcallGetExecutiveMonitorContextHandler (
++  IN UINT32  Index,
++  IN UINT64  AddressParameter
++  )
++{
++  STM_GET_EXECUTIVE_MONITOR_CONTEXT_DESCRIPTOR  *ExecutiveMonitorContextDescriptor;
++  STM_GET_EXECUTIVE_MONITOR_CONTEXT_DESCRIPTOR  *AddressParameterDescriptor;
++  STM_GET_EXECUTIVE_MONITOR_CONTEXT_DESCRIPTOR  LocalBuffer;
++  UINT32                                        CpuIndex;
++  MLE_VMM_DESCRIPTOR                            *VmcsDescriptor1;
++  STM_STATUS                                    Status;
++
++  DEBUG ((EFI_D_INFO, "STM_API_GET_EXECUTIVE_MONITOR_CONTEXT:\n"));
++  if (!IsGuestAddressValid ((UINTN)AddressParameter, sizeof(STM_GET_EXECUTIVE_MONITOR_CONTEXT_DESCRIPTOR), FALSE)) {
++    DEBUG ((EFI_D_ERROR, "Security Violation!\n"));
++    return ERROR_STM_SECURITY_VIOLATION;
++  }
++
++  //
++  // Copy data to local, to prevent time of check VS time of use attack
++  //
++  CopyMem (&LocalBuffer, (VOID *)(UINTN)AddressParameter, sizeof(LocalBuffer));
++  ExecutiveMonitorContextDescriptor = (STM_GET_EXECUTIVE_MONITOR_CONTEXT_DESCRIPTOR *)&LocalBuffer;
++  VmcsDescriptor1 = (MLE_VMM_DESCRIPTOR*)(UINTN)ExecutiveMonitorContextDescriptor->VmDescriptor;
++  CpuIndex = VmcsDescriptor1->LocalApicId;
++
++  Status =
++  ExecutiveMonitorVmcsContext (
++    (UINTN)ExecutiveMonitorContextDescriptor->VmIndex,
++    ExecutiveMonitorContextDescriptor->VmDescriptor,
++    CpuIndex,
++    mHostContextCommon.VmcsDatabase
++    );
++
++  //
++  // CopyData back
++  //
++  AddressParameterDescriptor = (STM_GET_EXECUTIVE_MONITOR_CONTEXT_DESCRIPTOR *)(UINTN)AddressParameter;
++
++  CopyMem((VOID*)(UINTN)(AddressParameterDescriptor->VmDescriptor), (VOID*)(UINTN)(ExecutiveMonitorContextDescriptor->VmDescriptor), sizeof(MLE_VMM_DESCRIPTOR));
++
++  return Status;
++}
++
+ STM_VMCALL_HANDLER_STRUCT  mSmmVmcallHandler[] = {
+   {STM_API_MAP_ADDRESS_RANGE,                  SmmVmcallMapAddressRangeHandler},
+   {STM_API_UNMAP_ADDRESS_RANGE,                SmmVmcallUnmapAddressRangeHandler},
+   {STM_API_ADDRESS_LOOKUP,                     SmmVmcallAddressLookupHandler},
+   {STM_API_RETURN_FROM_PROTECTION_EXCEPTION,   SmmVmcallReturnFromProtectionExceptionHandler},
++  {STM_API_GET_EXECUTIVE_MONITOR_CONTEXT,      SmmVmcallGetExecutiveMonitorContextHandler},
+ };
+ 
+ /**
+diff --git a/Stm/StmPkg/Core/Stm.h b/Stm/StmPkg/Core/Stm.h
+index 1e74175..956a124 100644
+--- a/Stm/StmPkg/Core/Stm.h
++++ b/Stm/StmPkg/Core/Stm.h
+@@ -294,6 +294,22 @@ DumpVmcsRecord (
+   IN UINT64  VmcsDatabase
+   );
+ 
++/**
++ This function Returns the physical address of the requested VMCS
++ @param VmIndex        MLE VM index
++ @param VmcsDatabase   VMCS Database table
++
++ @return Status
++
++**/
++STM_STATUS
++ExecutiveMonitorVmcsContext (
++    IN UINTN VmIndex,
++    IN UINT64 VmDescriptor,
++    IN UINT32 CpuIndex,
++    IN UINT64 VmcsDatabase
++    );
++
+ /**
+ 
+   This function return if 2 resource overlap.
+@@ -994,5 +1010,6 @@ typedef struct _STM_HOST_CONTEXT_COMMON {
+ extern STM_HOST_CONTEXT_COMMON         mHostContextCommon;
+ extern STM_GUEST_CONTEXT_COMMON        mGuestContextCommonSmi;
+ extern STM_GUEST_CONTEXT_COMMON        mGuestContextCommonSmm;
++extern UINT64                          *mExecutiveVmcs;
+ 
+ #endif
+diff --git a/Stm/StmPkg/Core/VmcsRecord.c b/Stm/StmPkg/Core/VmcsRecord.c
+index 1e63e10..fe48546 100644
+--- a/Stm/StmPkg/Core/VmcsRecord.c
++++ b/Stm/StmPkg/Core/VmcsRecord.c
+@@ -169,3 +169,127 @@ DumpVmcsRecord (
+     DEBUG ((EFI_D_INFO, "  Type              : %08x\n", (UINTN)VmcsDatabaseTable[Index].Type));
+   }
+ }
++
++/**
++
++  This function gets the context of  requested VM of Executive Monitor.
++  SMI may either be triggered when the logical processor is executing in either VMX root context or VMX non-root context
++
++  @return STM_SUCCESS                      found context
++  @return ERROR_STM_INVALID_VMCS_DATABASE  VMCS database error
++  @return ERROR_INVALID_PARAMETER          request error
++
++**/
++STM_STATUS
++ExecutiveMonitorVmcsContext (
++  IN UINTN  VmIndex,
++  IN UINT64 VmDescriptor,
++  IN UINT32 CpuIndex,
++  IN UINT64 VmcsDatabase
++  )
++{
++    VMCS_RECORD_STRUCTURE     *VmcsDatabaseTable;
++    UINT32                    Index = 0;
++    VM_EXIT_INFO_BASIC        ExitInfo;
++    UINT64                    VmVmcs;
++    UINT64                    CurrentVmcs;
++    MLE_VMM_DESCRIPTOR        *VmcsDescriptor;
++    UINTN                     Rflags;
++    UINT32                    IsVmxon = 0;
++    Index = CpuIndex;
++
++    VmcsDatabaseTable = (VMCS_RECORD_STRUCTURE*)(UINTN)VmcsDatabase;
++    VmcsDescriptor = (MLE_VMM_DESCRIPTOR*)(UINTN)VmDescriptor;
++
++    // Get the appropiate VMCS pointer depending the VM whose context is requested.
++    if (VmIndex == 0) { // Get VMXON contents
++        ExitInfo.Uint32 = mGuestContextCommonSmi.GuestContextPerCpu[CpuIndex].InfoBasic.Uint32;
++        // If the logical processor were executing in VMX root, then on SMI FromVmxRootOperation bit of ExitInfo is set
++        IsVmxon = ExitInfo.Bits.FromVmxRootOperation;
++
++        if(IsVmxon == 0)
++        {
++            VmVmcs = mExecutiveVmcs[CpuIndex];
++            DEBUG ((EFI_D_INFO, "(STM-VMCS) Getting context from mExecutiveVmcs\n"));
++        }
++    } else {
++        if(VmcsDatabaseTable == 0) {
++            DEBUG ((EFI_D_INFO, "VmcsDatabaseTable Empty:\n"));
++            return ERROR_STM_INVALID_VMCS_DATABASE;
++        } else if(VmcsDatabaseTable[Index].Type == VMCS_RECORD_OCCUPIED) {
++            VmVmcs = VmcsDatabaseTable[Index].VmcsPhysPointer;
++        } else {
++            return ERROR_INVALID_PARAMETER;
++        }
++    }
++
++    VmcsDescriptor->Signature = MLE_VMM_DESCRIPTOR_SIGNATURE;
++    VmcsDescriptor->VmmDescriptorVerMajor = MLE_VMM_DESCRIPTOR_VERSION_MAJOR;
++    VmcsDescriptor->VmmDescriptorVerMinor = MLE_VMM_DESCRIPTOR_VERSION_MINOR;
++
++    // CASE A: Return VMX-root Info
++    if((VmIndex == 0) && (IsVmxon == 1)) {
++        // CASE1: SMI triggered from VMX-root mode
++			  DEBUG ((EFI_D_INFO, "(STM-VMCS) Getting VMX root state\n"));
++        VmcsDescriptor->VmmCr0 = mGuestContextCommonSmi.GuestContextPerCpu[CpuIndex].Cr0;
++        VmcsDescriptor->VmmCr3 = mGuestContextCommonSmi.GuestContextPerCpu[CpuIndex].Cr3;
++        VmcsDescriptor->VmmCr4 = (UINT32)mGuestContextCommonSmi.GuestContextPerCpu[CpuIndex].Cr4;
++        VmcsDescriptor->VmmLdtrBase = 0x0;
++        VmcsDescriptor->VmmGdtrBase = mGuestContextCommonSmi.GuestContextPerCpu[CpuIndex].Gdtr.Base;
++        VmcsDescriptor->VmmIdtrBase = mGuestContextCommonSmi.GuestContextPerCpu[CpuIndex].Idtr.Base;
++        VmcsDescriptor->VmmEfer = mGuestContextCommonSmi.GuestContextPerCpu[CpuIndex].Efer;
++    } else {
++        /*
++          1. Save current VMCS pointer
++          2. Load appropiate VM's VmcsPtr
++          3. Do a VMREAD on the contents and store them in VmcsDescriptor
++          4. Load the earlier saved VMCS pntr
++        */
++        DEBUG ((EFI_D_INFO, "(STM-VMCS) Getting VMX non-root state\n"));
++        AsmVmPtrStore(&CurrentVmcs);
++        Rflags = AsmVmClear(&CurrentVmcs);
++        if((Rflags &(RFLAGS_CF | RFLAGS_ZF)) != 0)
++        {
++            DEBUG ((EFI_D_ERROR, "ERROR: VmClear - %016lx : %08x\n", &CurrentVmcs, Rflags));
++            return ERROR_INVALID_PARAMETER;
++        }
++        Rflags = AsmVmPtrLoad(&VmVmcs);
++        if((Rflags &(RFLAGS_CF | RFLAGS_ZF)) != 0)
++        {
++            DEBUG ((EFI_D_ERROR, "ERROR: CF=1 OR ZF=1, VmPtrLoad - %016lx : %08x\n", VmVmcs, Rflags));
++            return ERROR_INVALID_PARAMETER;
++        }
++
++        if(VmIndex == 0) {
++            //CASE2: SMI triggered from VMX-nonroot mode
++            VmcsDescriptor->VmmCr0 = (UINT64)VmReadN(VMCS_N_HOST_CR0_INDEX);
++            VmcsDescriptor->VmmCr3 = (UINT64)VmReadN(VMCS_N_HOST_CR3_INDEX);
++            VmcsDescriptor->VmmCr4 = (UINT32)VmReadN(VMCS_N_HOST_CR4_INDEX);
++            VmcsDescriptor->VmmLdtrBase = 0x0;
++            VmcsDescriptor->VmmGdtrBase = (UINT64)VmReadN(VMCS_N_HOST_GDTR_BASE_INDEX);
++            VmcsDescriptor->VmmIdtrBase = (UINT64)VmReadN(VMCS_N_HOST_IDTR_BASE_INDEX);
++            VmcsDescriptor->VmmEfer = VmRead64(VMCS_64_HOST_IA32_EFER_INDEX);
++        } else {
++            //CASE B: Return VMX-nonroot Info
++            //CASE3: SMI triggered from VMX-root mode
++            //CASE4: SMI triggered from VMX-nonroot mode
++            VmcsDescriptor->VmmCr0 = (UINT64)VmReadN(VMCS_N_GUEST_CR0_INDEX);
++            VmcsDescriptor->VmmCr3 = (UINT64)VmReadN(VMCS_N_GUEST_CR3_INDEX);
++            VmcsDescriptor->VmmCr4 = (UINT32)VmReadN(VMCS_N_GUEST_CR4_INDEX);
++            VmcsDescriptor->VmmLdtrBase = (UINT64)VmReadN(VMCS_N_GUEST_LDTR_BASE_INDEX);
++            VmcsDescriptor->VmmGdtrBase = (UINT64)VmReadN(VMCS_N_GUEST_GDTR_BASE_INDEX);
++            VmcsDescriptor->VmmIdtrBase = (UINT64)VmReadN(VMCS_N_GUEST_IDTR_BASE_INDEX);
++            VmcsDescriptor->VmmEfer = VmRead64(VMCS_64_GUEST_IA32_EFER_INDEX);
++        }
++        AsmVmPtrLoad(&CurrentVmcs);
++        if((Rflags &(RFLAGS_CF | RFLAGS_ZF)) != 0)
++        {
++            DEBUG ((EFI_D_ERROR, "ERROR: VmPtrLoad - %016lx : %08x\n", CurrentVmcs, Rflags));
++            return ERROR_INVALID_PARAMETER;
++        }
++    }
++    DEBUG ((EFI_D_INFO, "(STM-VMCS) Retreived Hypervisor state\n"));
++
++    return STM_SUCCESS;
++}
++
+diff --git a/Stm/StmPkg/Include/StmApi.h b/Stm/StmPkg/Include/StmApi.h
+index 9579d64..8dad9e6 100644
+--- a/Stm/StmPkg/Include/StmApi.h
++++ b/Stm/StmPkg/Include/StmApi.h
+@@ -156,6 +156,26 @@ typedef struct {
+ #define TXT_PROCESSOR_SMM_DESCRIPTOR_VERSION_MAJOR     1
+ #define TXT_PROCESSOR_SMM_DESCRIPTOR_VERSION_MINOR     0
+ 
++typedef struct {
++  UINT64                            Signature;
++  UINT16                            Size;
++  UINT8                             VmmDescriptorVerMajor;
++  UINT8                             VmmDescriptorVerMinor;
++  UINT32                            LocalApicId;
++  UINT64                            VmmCr0;
++  UINT64                            VmmCr3;
++  UINT32                            VmmCr4;
++  UINT64                            VmmLdtrBase;
++  UINT64                            VmmGdtrBase;
++  UINT64                            VmmIdtrBase;
++  UINT64                            VmmEfer;
++  UINT8                             PhysicalAddressBits;
++} MLE_VMM_DESCRIPTOR;
++
++#define MLE_VMM_DESCRIPTOR_SIGNATURE         SIGNATURE_64('M', 'L', 'E', 'V', 'M', 'S', 'I', 'G')
++#define MLE_VMM_DESCRIPTOR_VERSION_MAJOR     1
++#define MLE_VMM_DESCRIPTOR_VERSION_MINOR     0
++
+ typedef enum {
+   TxtSmmPageViolation = 1,
+   TxtSmmMsrViolation,
+@@ -329,6 +349,11 @@ typedef struct {
+ #define ONE_TO_ONE  1
+ #define VIRTUAL_ADDRESS_SPECIFIED 3
+ 
++typedef struct {
++  UINT64   VmDescriptor;
++  UINT32   VmIndex;
++} STM_GET_EXECUTIVE_MONITOR_CONTEXT_DESCRIPTOR;
++
+ //
+ // STM_RESOURCE_LIST
+ //
+@@ -560,6 +585,7 @@ typedef struct {
+ #define STM_API_UNMAP_ADDRESS_RANGE                0x00000002
+ #define STM_API_ADDRESS_LOOKUP                     0x00000003
+ #define STM_API_RETURN_FROM_PROTECTION_EXCEPTION   0x00000004
++#define STM_API_GET_EXECUTIVE_MONITOR_CONTEXT      0x00000005
+ 
+ // API number convention: MLE facing VMCALL interfaces have bit 16 set
+ //
+-- 
+2.22.0.windows.1
+

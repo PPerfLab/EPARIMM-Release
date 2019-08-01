@@ -1,0 +1,14 @@
+Xen Patches for EPA-RIMM-Xen
+
+These Xen patches were developed and should be applied over the stm-optin branch available on https://github.com/PPerfLab/xen.git for Xen 4.11. The stm-optin branch opts-in to STM if the BIOS supports STM.
+
+For the 4.11 version of Xen, we have the dom0 kernel as a paravirtualized guest. For EPA-RIMM-Xen, we have added support for a few hypercalls so that the Ring0Manager (running in Domain0) can communicate with the hyerpvisor.
+
+In Patch1: We added support for hypercall copy_to_xen and copy_from_xen, that allow the Ring0Manager to request a page from Xen for storing of Bin.  
+
+In Patch2: We added support for Xen to invoke the GET_STM_PERFORMANCE VMCALL to collect STM performance data and provide it to the Ring0Manager. Do make sure while applying this pacth and using it that your Xen supports STM. 
+
+Patch1 is necessary for EPA-RIMM-Xen to run as expected. You may apply Patch2 if you would like to get and understand STM Performance. 
+
+Make sure you also apply the Linux patches. These linux and xen patches go hand-in-hand.
+

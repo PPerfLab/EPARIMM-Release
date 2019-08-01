@@ -1,0 +1,47 @@
+From 5dccd0c897fc6f05e8637f81e9d40596be7c4e3b Mon Sep 17 00:00:00 2001
+Message-Id: <5dccd0c897fc6f05e8637f81e9d40596be7c4e3b.1564569522.git.tejaswiniav@gmail.com>
+In-Reply-To: <ab0faf46c09ae2d26dfe2c5c635cd27ac52f31f4.1564569522.git.tejaswiniav@gmail.com>
+References: <ab0faf46c09ae2d26dfe2c5c635cd27ac52f31f4.1564569522.git.tejaswiniav@gmail.com>
+From: Tejaswini Vibhute <tejaswiniav@gmail.com>
+Date: Wed, 31 Jul 2019 02:48:17 -0700
+Subject: [PATCH 2/2] Adding support for obtaining STM performance data
+ collected.
+
+---
+ arch/x86/include/asm/xen/hypercall.h | 7 +++++++
+ include/xen/interface/xen.h          | 1 +
+ 2 files changed, 8 insertions(+)
+
+diff --git a/arch/x86/include/asm/xen/hypercall.h b/arch/x86/include/asm/xen/hypercall.h
+index fd858bb01752..a772968ebe1e 100644
+--- a/arch/x86/include/asm/xen/hypercall.h
++++ b/arch/x86/include/asm/xen/hypercall.h
+@@ -300,6 +300,13 @@ HYPERVISOR_copy_from_xen(
+     return _hypercall3(unsigned long long, copy_from_xen, len, arg, src);
+ }
+ 
++static inline unsigned long long
++HYPERVISOR_get_stm_perf(
++        void *arg)
++{
++    return _hypercall1(unsigned long long, get_stm_perf, arg);
++}
++
+ static inline int
+ HYPERVISOR_fpu_taskswitch(int set)
+ {
+diff --git a/include/xen/interface/xen.h b/include/xen/interface/xen.h
+index 890829cdf431..51d0df20fda4 100644
+--- a/include/xen/interface/xen.h
++++ b/include/xen/interface/xen.h
+@@ -95,6 +95,7 @@
+ 
+ #define __HYPERVISOR_copy_to_xen          56
+ #define __HYPERVISOR_copy_from_xen        57
++#define __HYPERVISOR_get_stm_perf         58
+ 
+ /*
+  * VIRTUAL INTERRUPTS
+-- 
+2.17.1
+

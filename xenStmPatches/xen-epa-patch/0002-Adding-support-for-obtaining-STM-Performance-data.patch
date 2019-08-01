@@ -1,0 +1,217 @@
+From 976b885f982f79cf33d7576cf9d4d709b33acc97 Mon Sep 17 00:00:00 2001
+Message-Id: <976b885f982f79cf33d7576cf9d4d709b33acc97.1564569448.git.tejaswiniav@gmail.com>
+In-Reply-To: <b57f46ec3ccd6da62dbf1d027854478750e63e52.1564569448.git.tejaswiniav@gmail.com>
+References: <b57f46ec3ccd6da62dbf1d027854478750e63e52.1564569448.git.tejaswiniav@gmail.com>
+From: Tejaswini Vibhute <tejaswiniav@gmail.com>
+Date: Wed, 31 Jul 2019 02:47:05 -0700
+Subject: [PATCH 2/2] Adding support for obtaining STM Performance data.
+
+---
+ xen/arch/x86/dual_monitor_mode.c        | 84 +++++++++++++++++++++++++
+ xen/arch/x86/hypercall.c                |  1 +
+ xen/arch/x86/pv/hypercall.c             |  1 +
+ xen/include/asm-x86/dual_monitor_mode.h | 17 +++++
+ xen/include/public/xen.h                |  1 +
+ xen/include/xen/hypercall.h             |  4 ++
+ 6 files changed, 108 insertions(+)
+
+diff --git a/xen/arch/x86/dual_monitor_mode.c b/xen/arch/x86/dual_monitor_mode.c
+index 4b2e3b1d7e..389c0b20dd 100644
+--- a/xen/arch/x86/dual_monitor_mode.c
++++ b/xen/arch/x86/dual_monitor_mode.c
+@@ -31,6 +31,7 @@
+ #include <asm/msr.h>
+ #include <asm/hvm/vmx/vmx.h>
+ #include <asm/hvm/vmx/vmcs.h>
++#include <xen/guest_access.h>
+ 
+ static DEFINE_PER_CPU(paddr_t, temp_vmcs);
+ static DEFINE_SPINLOCK(cntr_lock);
+@@ -444,6 +445,68 @@ void teardown_stm(void *unused)
+     return;
+ }
+ 
++/*
++ * Get the STM performance for EPA
++ */
++unsigned long do_get_stm_perf(XEN_GUEST_HANDLE_PARAM(void) arg)
++{
++    void *perfdata;
++    STM_PERF_DATA_ENTRY* perf;
++    uint32_t eax_reg = 0;
++    uint32_t ebx_reg = 0;
++    uint32_t ecx_reg = 0;
++    uint32_t edx_reg = 0;
++    int page_index = 0;
++
++    printk("STM: Obtaining STM Performance data.\n");
++
++    if ( (perfdata = alloc_xenheap_pages( \
++                    get_order_from_pages(MAX_RESOURCE_PAGES), 0)) == NULL )
++    {
++        printk("STM: Failed to allocate resource page.\n");
++        return -EFAULT;
++    }
++
++    for(page_index = 0; page_index < MAX_RESOURCE_PAGES; page_index++)
++    {
++        eax_reg = STM_API_GET_PERFORMANCE_DATA;
++
++        ebx_reg = (uint64_t)__pa((struct page_info*)perfdata + \
++                page_index*PAGE_SIZE);
++        ecx_reg = ((uint64_t)__pa((struct page_info*)perfdata + \
++                    page_index*PAGE_SIZE)) >> 32;
++        edx_reg = page_index;
++
++        asm volatile(
++            ".byte 0x0f,0x01,0xc1\n"
++            :"=a"(eax_reg)
++            :"a"(eax_reg), "b"(ebx_reg), "c"(ecx_reg), "d"(edx_reg)
++            :"memory"
++            );
++    }
++    if ( eax_reg != STM_SUCCESS )
++    {
++        printk("STM: STM_API_GET_PERFORMANCE_DATA failed with error: \
++                0x%lx\n", (unsigned long)eax_reg);
++        free_xenheap_page(perfdata);
++        return eax_reg;
++    }
++
++    perf = (STM_PERF_DATA_ENTRY*)((uint64_t)perfdata + page_index*PAGE_SIZE);
++    dump_stm_performance_measurement (perf, \
++            (page_index*PAGE_SIZE)/sizeof(STM_PERF_DATA_ENTRY));
++
++    if ( copy_to_guest(arg, perfdata, PAGE_SIZE) )
++    {
++        printk("STM: Failed to copy to performance data with error : 0x%lx\n", \
++                (unsigned long)(-EFAULT));
++        free_xenheap_page(perfdata);
++        return -EFAULT;
++    }
++    free_xenheap_page(perfdata);
++    return 0;
++}
++
+ /*
+  * This function dumps STM resource node header.
+  */
+@@ -584,3 +647,24 @@ void dump_stm_resource(STM_RSC *Resource)
+                 (STM_RSC *)(uint64_t)Resource->End.ResourceListContinuation);
+ }
+ 
++/*
++ * Dump STM performance measurement.
++ */
++void dump_stm_performance_measurement(STM_PERF_DATA_ENTRY *DataEntry, uint32_t entry_count)
++{
++    uint8_t index;
++
++    for (index = 0; index < entry_count; index++) {
++        printk ("XEN-STM: StmPerfEntry:\n");
++        printk ("\tXEN-STM: StartTimeStamp   : %016lx\n", DataEntry[index].StartTimeStamp);
++        printk ("\tXEN-STM: EndTimeStamp     : %016lx\n", DataEntry[index].EndTimeStamp);
++        printk ("\tXEN-STM: DeltaOfTimeStamp : %016lx\n", DataEntry[index].DeltaOfTimeStamp);
++        printk ("\tXEN-STM: CpuIndex         : %08x\n",   (int)DataEntry[index].CpuIndex);
++        printk ("\tXEN-STM: Reason           : %08x\n",   (int)DataEntry[index].Reason);
++        printk ("\tXEN-STM: Token            : %s\n",     DataEntry[index].Token);
++        printk ("\tXEN-STM: StartDesc        : %s\n",     DataEntry[index].StartDescription);
++        printk ("\tXEN-STM: EndDesc          : %s\n",     DataEntry[index].EndDescription);
++    }
++
++}
++
+diff --git a/xen/arch/x86/hypercall.c b/xen/arch/x86/hypercall.c
+index 6283a6a832..4a321d7e63 100644
+--- a/xen/arch/x86/hypercall.c
++++ b/xen/arch/x86/hypercall.c
+@@ -71,6 +71,7 @@ const hypercall_args_t hypercall_args_table[NR_hypercalls] =
+     ARGS(arch_1, 1),
+     ARGS(copy_to_xen, 2),
+     ARGS(copy_from_xen, 3),
++    ARGS(get_stm_perf, 1),
+ };
+ 
+ #undef COMP
+diff --git a/xen/arch/x86/pv/hypercall.c b/xen/arch/x86/pv/hypercall.c
+index 588f8c4fae..564d87e44a 100644
+--- a/xen/arch/x86/pv/hypercall.c
++++ b/xen/arch/x86/pv/hypercall.c
+@@ -84,6 +84,7 @@ const hypercall_table_t pv_hypercall_table[] = {
+     HYPERCALL(arch_1),
+     HYPERCALL(copy_to_xen),
+     HYPERCALL(copy_from_xen),
++    HYPERCALL(get_stm_perf),
+ };
+ 
+ #undef do_arch_1
+diff --git a/xen/include/asm-x86/dual_monitor_mode.h b/xen/include/asm-x86/dual_monitor_mode.h
+index 04df51638c..1ca943286b 100644
+--- a/xen/include/asm-x86/dual_monitor_mode.h
++++ b/xen/include/asm-x86/dual_monitor_mode.h
+@@ -39,6 +39,7 @@
+ #define STM_API_MANAGE_VMCS_DATABASE               0x00010006
+ #define STM_API_INITIALIZE_PROTECTION              0x00010007
+ #define STM_API_MANAGE_EVENT_LOG                   0x00010008
++#define STM_API_GET_PERFORMANCE_DATA               0x00010009
+ 
+ /*
+  * STM Return Codes
+@@ -229,11 +230,27 @@ typedef struct {
+   uint32_t AddOrRemove;
+ } STM_VMCS_DATABASE_REQUEST;
+ 
++/* STM performance */
++#define STM_PERF_DATA_ENTRY_TOKEN_LENGTH_MAX  16
++
++typedef struct {
++  uint64_t   StartTimeStamp;
++  uint64_t   EndTimeStamp;
++  uint64_t   DeltaOfTimeStamp;
++  uint32_t   CpuIndex;
++  uint32_t   Reason;
++  char       Token[STM_PERF_DATA_ENTRY_TOKEN_LENGTH_MAX];
++  char       StartDescription[STM_PERF_DATA_ENTRY_TOKEN_LENGTH_MAX];
++  char       EndDescription[STM_PERF_DATA_ENTRY_TOKEN_LENGTH_MAX];
++} STM_PERF_DATA_ENTRY;
++
++
+ extern void launch_stm(void* unused);
+ int manage_vmcs_database(uint64_t vmcs_ptr, uint32_t add_remove);
+ extern void teardown_stm(void* unused);
+ void dump_stm_resource_header(STM_RSC *Resource);
+ void dump_stm_resource_node(STM_RSC *Resource);
+ void dump_stm_resource(STM_RSC *Resource);
++void dump_stm_performance_measurement(STM_PERF_DATA_ENTRY *DataEntry, uint32_t entry_count);
+ 
+ #endif
+diff --git a/xen/include/public/xen.h b/xen/include/public/xen.h
+index 9c594caeff..09b16b737c 100644
+--- a/xen/include/public/xen.h
++++ b/xen/include/public/xen.h
+@@ -134,6 +134,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
+ 
+ #define __HYPERVISOR_copy_to_xen          56
+ #define __HYPERVISOR_copy_from_xen        57
++#define __HYPERVISOR_get_stm_perf         58
+ 
+ /* ` } */
+ 
+diff --git a/xen/include/xen/hypercall.h b/xen/include/xen/hypercall.h
+index 9db6717230..701c3e408e 100644
+--- a/xen/include/xen/hypercall.h
++++ b/xen/include/xen/hypercall.h
+@@ -141,6 +141,10 @@ do_copy_from_xen(
+         XEN_GUEST_HANDLE_PARAM(void) arg,
+         void *arc);
+ 
++extern unsigned long
++do_get_stm_perf(
++        XEN_GUEST_HANDLE_PARAM(void) arg);
++
+ #ifdef CONFIG_TMEM
+ extern long
+ do_tmem_op(
+-- 
+2.17.1
+

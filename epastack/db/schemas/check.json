@@ -1,0 +1,111 @@
+{
+    "schema": "checkDesc",
+    "version": "2.0",
+    "description": "The check is defined in the DM and passed between DM and BEM",
+    "fields": [
+        {
+            "field": "name",
+            "description": "human readable name for check",
+            "type": "str",
+            "user specified": "1",
+            "required": "True",
+            "validate": "None"
+        },
+        {
+            "field": "id",
+            "description": "the system-internal unique id for the check",
+            "type": "str",
+            "user specified": "False",
+            "required": "True",
+            "validate": "None"
+        },
+        {
+            "field": "node_id",
+            "description": "the id of the monitored node on which this check will run",
+            "type": "int",
+            "user specified": "2",
+            "required": "True",
+            "validate": "None"
+        },
+        {
+            "field": "sched",
+            "description": "specifies this check should be run once, n times, or repeatedly",
+            "type": "int",
+            "user specified": "3",
+            "required": "True",
+            "validate": "policies.SCHED_TYPES[x]"
+        },
+        {
+            "field": "command",
+            "description": "the type of inspection/measurement being done",
+            "type": "int",
+            "user specified": "4",
+            "required": "True",
+            "validate": "policies.INSPECTOR_COMMANDS[x]"
+        },
+        {
+            "field": "operand",
+            "description": "if command is a register command, this specifies which register",
+            "type": "int",
+            "user specified": "5",
+            "required": "False",
+            "validate": "policies.validate_operand(x, y)"
+        },
+        {
+            "field": "address",
+            "description": "if command is a memory command, this specifies the starting address of the memory range",
+            "type": "int",
+            "user specified": "6",
+            "required": "False",
+            "validate": "policies.validate_address(x, y)"
+        },
+        {
+            "field": "len",
+            "description": "if command is a memory command, this specifies how many bytes past the starting address to measure",
+            "type": "int",
+            "user specified": "7",
+            "required": "False",
+            "validate": "policies.validate_length(x, y)"
+        },
+        {
+            "field": "last_insp",
+            "description": "the date & time this check last returned results",
+            "type": "int",
+            "user specified": "False",
+            "required": "False",
+            "validate": "None"
+        },
+        {
+            "field": "priority",
+            "description": "specifies the priority of the check",
+            "type": "int",
+            "user specified": "8",
+            "required": "True",
+            "validate": "x if x < policies.MAX_PRIORITY else 0"
+        },
+        {
+            "field": "sizes",
+            "description": "specifies the sizes of the groups of golden value hashes",
+            "type": "list",
+            "user specified": "False",
+            "required": "True",
+            "validate": "None"
+        },
+        {
+            "field": "hashes",
+            "description": "the groups of different-sized golden value hashes",
+            "type": "dict",
+            "user specified": "False",
+            "required": "True",
+            "validate": "None"
+        },
+        {
+            "field": "cost",
+            "description": "The hashing cost of this check at the designated node",
+            "type": "int",
+            "user specified": "False",
+            "required": "False",
+            "validate": "None"
+        }
+    ]
+}
